@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: blog-writing-agent
+    name: Blog-Writing-Agent
     runtime: python
 
     buildCommand: pip install -r requirements.txt
