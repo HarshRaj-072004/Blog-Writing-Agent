@@ -8,7 +8,7 @@ The system automatically determines when internet research is required, performs
 
 ## Live Demo
 
-Deployed on Render: [Add Deployment URL]
+Deployed on Render: https://blog-writing-agent-xo4y.onrender.com/
 
 ## Problem Statement
 
@@ -189,23 +189,23 @@ Blog-Writing-Agent/
 
 ### Architecture Diagram
 
-Add architecture screenshot.
+![Architecture](screenshots/architecture.png)
 
 ### Blog Planning
 
-Add screenshot of the generated plan.
+![Planning](screenshots/planning.png)
 
 ### Evidence Collection
 
-Add screenshot of the evidence tab.
+![Evidence](screenshots/evidence.png)
 
 ### Human Review Workflow
 
-Add screenshot showing revision requests and re-evaluation.
+![Human Review](screenshots/review.png)
 
 ### Generated Blog
 
-Add screenshot of the final blog containing citations and generated images.
+![Generated Blog](screenshots/blog_output.png)
 
 ## Running Locally
 
