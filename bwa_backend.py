@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from langgraph.checkpoint.memory import MemorySaver
 import operator
 import os
 import re
@@ -17,6 +17,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from dotenv import load_dotenv
 from langsmith import traceable
+from langgraph.types import interrupt
 
 load_dotenv()
 
@@ -122,6 +123,9 @@ class State(TypedDict):
     human_review_required: bool
     human_review_status: str
 
+    review_decision: str
+    human_feedback: str
+
     final: str
 
     
@@ -192,8 +196,10 @@ def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
         return []
     try:
         from langchain_community.tools.tavily_search import TavilySearchResults  # type: ignore
+        print("SEARCHING:", query)
         tool = TavilySearchResults(max_results=max_results)
         results = tool.invoke({"query": query})
+        print("RAW TAVILY:", results)
         out: List[dict] = []
         for r in results or []:
             out.append(
@@ -232,15 +238,27 @@ Rules:
 
 @traceable(name="research_node")
 def research_node(state: State) -> dict:
+
+    print("RESEARCH NODE ENTERED")
+
     queries = (state.get("queries") or [])[:10]
+
     raw: List[dict] = []
+
     for q in queries:
-        raw.extend(_tavily_search(q, max_results=6))
+        raw.extend(_tavily_search(q, max_results=2))
+
+    print("QUERIES:", queries)
+    print("RAW RESULTS COUNT:", len(raw))
 
     if not raw:
         return {"evidence": []}
 
     extractor = llm.with_structured_output(EvidencePack)
+
+    # Prevent token overflow
+    raw = raw[:6]
+
     pack = extractor.invoke(
         [
             SystemMessage(content=RESEARCH_SYSTEM),
@@ -254,18 +272,54 @@ def research_node(state: State) -> dict:
         ]
     )
 
+    # Deduplicate by URL
     dedup = {}
+
     for e in pack.evidence:
         if e.url:
             dedup[e.url] = e
+
     evidence = list(dedup.values())
 
+    print("EVIDENCE AFTER DEDUP:", len(evidence))
+
+    print("\n===== EVIDENCE DATES =====")
+
+    for e in evidence:
+        print(
+            e.title[:60],
+            "| published_at =",
+            e.published_at
+        )
+
+    print("=========================\n")
+
+    # Open-book recency filtering
     if state.get("mode") == "open_book":
+
         as_of = date.fromisoformat(state["as_of"])
         cutoff = as_of - timedelta(days=int(state["recency_days"]))
-        evidence = [e for e in evidence if (d := _iso_to_date(e.published_at)) and d >= cutoff]
 
-    return {"evidence": evidence}
+        filtered = []
+
+        for e in evidence:
+            d = _iso_to_date(e.published_at)
+
+            # keep evidence when date is missing
+            if d is None:
+                filtered.append(e)
+                continue
+
+            if d >= cutoff:
+                filtered.append(e)
+
+        evidence = filtered
+
+    print("FINAL EVIDENCE:", len(evidence))
+
+    return {
+        "evidence": evidence
+    }
 
 # -----------------------------
 #Orchestrator (Plan)
@@ -434,7 +488,7 @@ Return strictly GlobalImagePlan.
 @traceable(name="decide_images")
 def decide_images(state: State) -> dict:
     planner = llm.with_structured_output(GlobalImagePlan)
-    merged_md = state["merged_md"]
+    merged_md = state["merged_md"][:6000]  # avoid token overflow
     plan = state["plan"]
     assert plan is not None
 
@@ -621,22 +675,72 @@ def human_review_node(state: State):
 
     if report is None:
         return {
-            "human_review_required": False,
-            "human_review_status": "SKIPPED"
+            "human_review_status": "SKIPPED",
+            "review_decision": "approved"
         }
 
-    score = report.overall_score
-
-    if score < 7:
+    if report.overall_score >= 9.5:
         return {
-            "human_review_required": True,
-            "human_review_status": "REVIEW_NEEDED"
+            "human_review_status": "AUTO_APPROVED",
+            "review_decision": "approved"
         }
+
+    print("REACHED INTERRUPT NODE")
+
+    review = interrupt(
+    {
+        "blog": state["final"],
+        "evaluation": report.model_dump(),
+        "message": "Approve or request revision"
+    }
+    )
+
+    print("INTERRUPT RETURNED")
 
     return {
-        "human_review_required": False,
-        "human_review_status": "AUTO_APPROVED"
+        "human_review_status": "REVIEW_COMPLETED",
+        "review_decision": review.get("decision"),
+        "human_feedback": review.get("feedback", "")
     }
+
+@traceable(name="revision_node")
+def revision_node(state: State):
+
+    revised_blog = llm.invoke(
+        [
+            SystemMessage(
+                content="""
+                You are an expert editor.
+
+                Improve the blog according to human feedback.
+
+                Preserve structure and citations whenever possible.
+                """
+            ),
+            HumanMessage(
+                content=f"""
+                Human Feedback:
+
+                {state.get("human_feedback", "")}
+
+                Blog:
+
+                {state["final"]}
+                """
+            )
+        ]
+    ).content
+
+    return {
+        "final": revised_blog
+    }
+
+def review_router(state: State):
+
+    if state.get("review_decision") == "approved":
+        return "approved"
+
+    return "revise"
 
 #reducer subgraph
 reducer_graph = StateGraph(State)
@@ -663,6 +767,7 @@ g.add_node(
     evaluator_node
 )
 g.add_node("human_review", human_review_node)
+g.add_node("revision", revision_node)
 
 g.add_edge(START, "router")
 g.add_conditional_edges("router", route_next, {"research": "research", "orchestrator": "orchestrator"})
@@ -672,8 +777,21 @@ g.add_conditional_edges("orchestrator", fanout, ["worker"])
 g.add_edge("worker", "reducer")
 g.add_edge("reducer", "evaluator")
 g.add_edge("evaluator", "human_review")
-g.add_edge("human_review", END)
 
-app = g.compile()
+g.add_conditional_edges(
+    "human_review",
+    review_router,
+    {
+        "approved": END,
+        "revise": "revision"
+    }
+)
+
+g.add_edge("revision", "evaluator")
+
+memory = MemorySaver()
+
+app = g.compile(
+    checkpointer=memory
+)
 app
-

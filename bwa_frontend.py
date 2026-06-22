@@ -8,9 +8,10 @@ from datetime import date
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, Optional, List, Iterator, Tuple
-
+from langgraph.types import Command
 import pandas as pd
 import streamlit as st
+import uuid
 from bwa_backend import app
 
 
@@ -52,24 +53,34 @@ def try_stream(graph_app, inputs: Dict[str, Any]) -> Iterator[Tuple[str, Any]]:
     Yields ("updates"/"values"/"final", payload).
     """
     try:
-        for step in graph_app.stream(inputs, stream_mode="updates"):
+        config = {
+        "configurable": {
+            "thread_id": st.session_state["thread_id"]
+        }
+    }
+
+        for step in graph_app.stream(
+            inputs,
+            config=config,
+            stream_mode="updates"
+        ):
             yield ("updates", step)
-        out = graph_app.invoke(inputs)
+        out = graph_app.invoke(inputs,config=config)
         yield ("final", out)
         return
     except Exception:
         pass
 
     try:
-        for step in graph_app.stream(inputs, stream_mode="values"):
+        for step in graph_app.stream(inputs,config=config, stream_mode="values"):
             yield ("values", step)
-        out = graph_app.invoke(inputs)
+        out = graph_app.invoke(inputs,config=config)
         yield ("final", out)
         return
     except Exception:
         pass
 
-    out = graph_app.invoke(inputs)
+    out = graph_app.invoke(inputs,config=config)
     yield ("final", out)
 
 
@@ -185,6 +196,17 @@ st.set_page_config(page_title="LangGraph Blog Writer", layout="wide")
 
 st.title("Blog Writing Agent")
 
+if st.session_state.get("revision_completed"):
+
+    st.success(
+        "Blog revised and re-evaluated based on your feedback."
+    )
+
+    st.session_state.pop(
+        "revision_completed",
+        None
+    )
+
 with st.sidebar:
     st.header("Generate New Blog")
     topic = st.text_area(
@@ -268,14 +290,17 @@ if "last_out" not in st.session_state:
     ]
 )
 
-logs: List[str] = []
+if "logs" not in st.session_state:
+    st.session_state["logs"] = []
 
 
 def log(msg: str):
-    logs.append(msg)
+    st.session_state["logs"].append(msg)
 
 
 if run_btn:
+    st.session_state["thread_id"] = str(uuid.uuid4())
+
     if not topic.strip():
         st.warning("Please enter a topic.")
         st.stop()
@@ -291,6 +316,9 @@ if run_btn:
 
         "human_review_required": False,
         "human_review_status": "",
+
+        "review_decision": "",
+        "human_feedback": "",
 
         "as_of": as_of.isoformat(),
         "recency_days": 7,
@@ -318,6 +346,20 @@ if run_btn:
 
             current_state = extract_latest_state(current_state, payload)
 
+            if "__interrupt__" in payload:
+                st.session_state["interrupt_payload"] = payload
+
+                status.update(
+                    label="Waiting For Human Review",
+                    state="running"
+                )
+
+                st.warning(
+                    "Human review required."
+                )
+
+                break
+
             summary = {
                 "mode": current_state.get("mode"),
                 "needs_research": current_state.get("needs_research"),
@@ -334,9 +376,127 @@ if run_btn:
 
         elif kind == "final":
             out = payload
-            st.session_state["last_out"] = out
-            status.update(label=" Done", state="complete", expanded=False)
+
+            if "__interrupt__" in out:
+
+                st.session_state["interrupt_payload"] = out
+
+                status.update(
+                    label="Waiting For Human Review",
+                    state="running"
+                )
+
+                st.warning(
+                    "Human review required."
+                )
+
+            else:
+
+                st.session_state["last_out"] = out
+
+                status.update(
+                    label="Done",
+                    state="complete",
+                    expanded=False
+                )
+
             log("[final] received final state")
+
+interrupt_data = st.session_state.get(
+    "interrupt_payload"
+)
+
+st.write(
+    "interrupt_data exists:",
+    interrupt_data is not None
+)
+
+if interrupt_data:
+
+    st.subheader("Human Review")
+
+    interrupt_obj = interrupt_data["__interrupt__"][0]
+
+    review_data = interrupt_obj.value
+
+    st.write("### Evaluation")
+
+    st.json(
+        review_data["evaluation"]
+    )
+
+    feedback = st.text_area(
+        "Revision Feedback"
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+
+        if st.button("Approve"):
+            config = {
+    "configurable": {
+        "thread_id": st.session_state["thread_id"]
+    }
+}
+            result = app.invoke(
+                Command(
+                    resume={
+                        "decision": "approved",
+                        "feedback": ""
+                    }
+                ),
+                config=config
+            )
+
+            st.session_state["last_out"] = result
+
+            st.session_state.pop(
+                "interrupt_payload",
+                None
+            )
+
+            st.session_state.pop(
+                "thread_id",
+                None
+            )
+
+            st.rerun()
+
+    with col2:
+
+        if st.button("Request Revision"):
+
+            with st.spinner("Regenerating blog based on feedback..."):
+                result = app.invoke(
+                    Command(
+                        resume={
+                            "decision": "revise",
+                            "feedback": feedback
+                    }
+                 ),
+                    config={
+                         "configurable": {
+                            "thread_id": st.session_state["thread_id"]
+                         }
+                    }
+                 )
+            st.session_state["revision_completed"] = True
+            # IMPORTANT
+            if "__interrupt__" in result:
+
+                st.session_state["interrupt_payload"] = result
+
+            else:
+
+                st.session_state["last_out"] = result
+
+                st.session_state.pop(
+                    "interrupt_payload",
+                    None
+                )
+
+            st.rerun()
 
 # Render last result
 out = st.session_state.get("last_out")
@@ -537,11 +697,7 @@ if out:
     # --- Logs tab ---
     with tab_logs:
         st.subheader("Logs")
-        if "logs" not in st.session_state:
-            st.session_state["logs"] = []
-        if logs:
-            st.session_state["logs"].extend(logs)
-
+        
         st.text_area("Event log", value="\n\n".join(st.session_state["logs"][-80:]), height=520)
 else:
     st.info("Enter a topic and click **Generate Blog**.")
