@@ -196,10 +196,8 @@ def _tavily_search(query: str, max_results: int = 5) -> List[dict]:
         return []
     try:
         from langchain_community.tools.tavily_search import TavilySearchResults  # type: ignore
-        print("SEARCHING:", query)
         tool = TavilySearchResults(max_results=max_results)
         results = tool.invoke({"query": query})
-        print("RAW TAVILY:", results)
         out: List[dict] = []
         for r in results or []:
             out.append(
@@ -239,7 +237,6 @@ Rules:
 @traceable(name="research_node")
 def research_node(state: State) -> dict:
 
-    print("RESEARCH NODE ENTERED")
 
     queries = (state.get("queries") or [])[:10]
 
@@ -247,9 +244,6 @@ def research_node(state: State) -> dict:
 
     for q in queries:
         raw.extend(_tavily_search(q, max_results=2))
-
-    print("QUERIES:", queries)
-    print("RAW RESULTS COUNT:", len(raw))
 
     if not raw:
         return {"evidence": []}
@@ -281,10 +275,6 @@ def research_node(state: State) -> dict:
 
     evidence = list(dedup.values())
 
-    print("EVIDENCE AFTER DEDUP:", len(evidence))
-
-    print("\n===== EVIDENCE DATES =====")
-
     for e in evidence:
         print(
             e.title[:60],
@@ -292,7 +282,6 @@ def research_node(state: State) -> dict:
             e.published_at
         )
 
-    print("=========================\n")
 
     # Open-book recency filtering
     if state.get("mode") == "open_book":
@@ -315,7 +304,6 @@ def research_node(state: State) -> dict:
 
         evidence = filtered
 
-    print("FINAL EVIDENCE:", len(evidence))
 
     return {
         "evidence": evidence
@@ -598,10 +586,10 @@ def generate_and_place_images(state: State) -> dict:
             except Exception as e:
                 # graceful fallback: keep doc usable
                 prompt_block = (
-                    f"> **[IMAGE GENERATION FAILED]** {spec.get('caption','')}\n>\n"
-                    f"> **Alt:** {spec.get('alt','')}\n>\n"
-                    f"> **Prompt:** {spec.get('prompt','')}\n>\n"
-                    f"> **Error:** {e}\n"
+                    f" **[IMAGE GENERATION FAILED]** {spec.get('caption','')}\n>\n"
+                    f" **Alt:** {spec.get('alt','')}\n>\n"
+                    f" **Prompt:** {spec.get('prompt','')}\n>\n"
+                    f" **Error:** {e}\n"
                 )
                 md = md.replace(placeholder, prompt_block)
                 continue

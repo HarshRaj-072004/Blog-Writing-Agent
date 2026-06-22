@@ -191,7 +191,7 @@ def extract_title_from_md(md: str, fallback: str) -> str:
 
 # -----------------------------
 # Streamlit UI
-# -----------------------------
+
 st.set_page_config(page_title="LangGraph Blog Writer", layout="wide")
 
 st.title("Blog Writing Agent")
@@ -225,7 +225,7 @@ with st.sidebar:
         st.caption("No saved blogs found (*.md in current folder).")
         selected_md_file = None
     else:
-        # Build labels from file name + (optional) parsed title
+        
         options: List[str] = []
         file_by_label: Dict[str, Path] = {}
         for p in past_files[:50]:
@@ -251,20 +251,18 @@ with st.sidebar:
                 md_text = read_md_file(selected_md_file)
                 # Load into session_state as if it were a run output
                 st.session_state["last_out"] = {
-                    "plan": None,          # old files don't include plan
-                    "evidence": [],        # old files don't include evidence
+                    "plan": None,          
+                    "evidence": [],        
                     "image_specs": [],
-                    "evaluation": None,     # optional (not persisted)
+                    "evaluation": None,     
                     "final": md_text,      # markdown body
                 }
-                # also update the topic input to the title (best-effort) without changing UI
+                
                 st.session_state["topic_prefill"] = extract_title_from_md(md_text, selected_md_file.stem)
 
     
 
-# Keep your topic input as-is; optionally prefill for next run after loading a blog
 if "topic_prefill" in st.session_state and isinstance(st.session_state["topic_prefill"], str):
-    # Do not mutate widgets; just keep as a hint.
     pass
 
 # Storage for latest run
