@@ -207,6 +207,10 @@ Blog-Writing-Agent/
 
 ![Generated Blog](screenshots/blog_output.png)
 
+### LangSmith Trace
+
+![LangSmith Trace](screenshots/langsmith_traces.png)
+
 ## Running Locally
 
 Clone the repository:
