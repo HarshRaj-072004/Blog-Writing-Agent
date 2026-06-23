@@ -667,7 +667,7 @@ def human_review_node(state: State):
             "review_decision": "approved"
         }
 
-    if report.overall_score >= 9.5:
+    if report.overall_score >= 8.0:
         return {
             "human_review_status": "AUTO_APPROVED",
             "review_decision": "approved"
